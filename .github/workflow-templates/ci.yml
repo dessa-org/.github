@@ -1,0 +1,19 @@
+# Standard Dessa portfolio CI. Drop this in as .github/workflows/ci.yml — nothing to configure.
+# The reusable workflow auto-detects Node / .NET / Go in this repo and builds, lints, and tests.
+# Make this a required status check on `staging` and `main` (FULL) or `main` (LITE). See ADR 0004.
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, staging, main]
+  push:
+    branches: [develop, staging, main]
+
+jobs:
+  ci:
+    uses: dessa-org/.github/.github/workflows/ci.yml@main
+    # Override defaults only if this repo differs:
+    # with:
+    #   node-version: '20'
+    #   dotnet-version: '9.0.x'
+    #   go-version: '1.23'
