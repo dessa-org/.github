@@ -1,0 +1,85 @@
+# Portfolio delivery modes — machine-readable source of truth (ADR 0006).
+# Consumed by policy/apply-mode.sh to enforce branch protection, required
+# checks, and GitHub environments. Human rationale lives in dessa-logs ADR 0006.
+#
+# A repo's MODE is chosen by blast radius (who's hurt by a bad deploy):
+#   full   = customer/public products
+#   medium = internal tools + infra
+#   light  = libraries / docs / tests
+# MODIFIERS stack extra guards on top of a mode (they do NOT create new tiers).
+#
+# Shared spine (true for every mode — enforced by convention + CI, not this file):
+#   - main is always releasable;   features always branch from main
+#   - CD = deployer webhook;       release = annotated tag vX.Y.Z
+#   - rollback = redeploy previous artifact + expand-contract (back-compat) migrations
+#   - only downward flow = hotfix back-merge
+
+version: 1
+
+modes:
+  full:
+    long_lived_branches: [main, staging, develop]
+    environments: [dev, staging, prod]
+    base_branch: main
+    develop_role: public-test          # disposable soup; periodically reset to main
+    promotion: per-feature             # feature -> staging (NOT develop -> staging)
+    release: promote-then-record       # tag RC -> deploy -> verify -> fast-forward main
+    protected_branches: [staging, main]
+    required_checks: ["ci / ci-complete"]
+    required_reviews: 1
+    soak: true
+
+  medium:
+    long_lived_branches: [main, develop]
+    environments: [preprod, prod]
+    base_branch: main
+    develop_role: preprod              # curated integration branch
+    promotion: wholesale               # PR develop -> main
+    release: tag-then-deploy
+    protected_branches: [main]
+    required_checks: ["ci / ci-complete"]
+    required_reviews: 1
+    soak: false
+
+  light:
+    long_lived_branches: [main]
+    environments: []
+    base_branch: main
+    develop_role: none
+    promotion: direct                  # PR feature -> main
+    release: tag-publish               # semver tag -> publish (libs) / deploy (trivial sites)
+    protected_branches: [main]
+    required_checks: ["ci / ci-complete"]
+    required_reviews: 1
+    soak: false
+
+modifiers:
+  hardened:                            # high-blast-radius internal infra
+    protected_branches_add: [develop]
+    required_reviews: 2
+    tag_to_deploy: true                # prod deploys only from a tag, never a raw push
+    release: promote-then-record
+
+repos:
+  atd:              { mode: full }
+  letzcharter:      { mode: full }
+  goparq:           { mode: full }
+  atd-tour:         { mode: full }
+  atd-charter:      { mode: full }
+  dessa-booking:    { mode: full }
+  jeets-coffee:     { mode: full }
+  dessa-marketing:  { mode: full }
+  dessa-law:        { mode: full }
+  dessa-realestate: { mode: full }
+  dessa-deployer:   { mode: medium }
+  dessa-context:    { mode: medium }
+  mint:             { mode: medium }
+  dessa:            { mode: medium }
+  dessa-vault:      { mode: medium, modifiers: [hardened] }
+  dessa-sso:        { mode: medium, modifiers: [hardened] }
+  dessa-analytics:  { mode: medium, modifiers: [hardened] }
+  dessa-toolkit:    { mode: light }
+  platform-utils:   { mode: light }
+  dessa-e2e:        { mode: light }
+  dessa-logs:       { mode: light }
+  .github:          { mode: light }

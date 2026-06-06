@@ -145,3 +145,30 @@ jobs:
             ( cd "$mod" && go build ./... && go vet ./... && go test ./... )
             echo "::endgroup::"
           done
+
+  # Stable aggregator gate. Matrix/optional jobs produce dynamic or skipped
+  # check names that branch protection can't require directly — so require
+  # THIS one instead (context: "ci / ci-complete"). It fails if any needed
+  # job failed/was cancelled; skipped (stack-not-present) is allowed.
+  ci-complete:
+    name: ci-complete
+    needs: [discover, node, dotnet, go]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on required jobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A r=(
+            [discover]='${{ needs.discover.result }}'
+            [node]='${{ needs.node.result }}'
+            [dotnet]='${{ needs.dotnet.result }}'
+            [go]='${{ needs.go.result }}'
+          )
+          fail=0
+          for j in "${!r[@]}"; do
+            echo "  $j: ${r[$j]}"
+            case "${r[$j]}" in failure|cancelled) echo "::error::CI job '$j' ${r[$j]}"; fail=1;; esac
+          done
+          [ "$fail" = 0 ] && echo "✓ CI complete" || exit 1
