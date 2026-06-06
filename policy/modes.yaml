@@ -71,6 +71,8 @@ repos:
   dessa-marketing:  { mode: full }
   dessa-law:        { mode: full }
   dessa-realestate: { mode: full }
+  dessa-mobility:   { mode: full }
+  dessa-parking:    { mode: full }
   dessa-deployer:   { mode: medium }
   dessa-context:    { mode: medium }
   mint:             { mode: medium }
@@ -78,6 +80,7 @@ repos:
   dessa-vault:      { mode: medium, modifiers: [hardened] }
   dessa-sso:        { mode: medium, modifiers: [hardened] }
   dessa-analytics:  { mode: medium, modifiers: [hardened] }
+  dessa-security:   { mode: medium, modifiers: [hardened] }
   dessa-toolkit:    { mode: light }
   platform-utils:   { mode: light }
   dessa-e2e:        { mode: light }
