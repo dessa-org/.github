@@ -1,0 +1,7 @@
+{
+  "name": "Dessa Secret Scan",
+  "description": "Non-bypassable gitleaks secret-scanning gate (dessa-security ROADMAP P0). Scans the commits each PR/push introduces via the dessa-org/.github reusable workflow.",
+  "iconName": "octicon-shield-lock",
+  "categories": ["Security", "Continuous integration"],
+  "filePatterns": []
+}
