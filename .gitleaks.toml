@@ -1,0 +1,141 @@
+# Portfolio gitleaks config — the canonical drop-in for every dessa-org repo.
+#
+# `extend.useDefault = true` layers gitleaks' built-in ruleset (AWS keys, GitHub/GitLab tokens,
+# private keys, generic high-entropy assignments, etc.) UNDERNEATH the additions below. We do not
+# re-declare the defaults — only the portfolio-specific rules and allowlist live here.
+#
+# Used by BOTH the pre-commit hook and the CI gate (`--config .gitleaks.toml`). Copy this file to
+# a repo root to share the same allowlist tuning across local + CI. With no .gitleaks.toml present,
+# gitleaks uses its embedded default ruleset — still a real gate, just without the tuning below.
+
+title = "dessa-org portfolio gitleaks config"
+
+[extend]
+useDefault = true
+
+# --- Portfolio-specific rules ---------------------------------------------------------------
+# Catch the exact class that has bitten this portfolio: a live RDS/Postgres URI inlined into code
+# or a test script (the ATD_C1 leak, the ADR 0007 atdcharter credential). The default ruleset's
+# generic patterns catch many of these, but an explicit rule gives a clear finding name + raises
+# confidence for the connection-string shape specifically.
+[[rules]]
+id = "dessa-db-connection-uri"
+description = "Database connection URI with inline credentials (postgres/mysql/mongodb)"
+regex = '''(?i)\b(postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^\s:@/]+:[^\s:@/]+@[^\s/]+'''
+keywords = ["postgres", "postgresql", "mysql", "mongodb"]
+
+# --- Allowlists -----------------------------------------------------------------------------
+# Keep these MINIMAL and SCOPED. Never blanket-skip a path to make the gate green — that defeats
+# the control. Prefer a per-finding fingerprint in .gitleaksignore over broadening these globs.
+#
+# EVERY ENTRY BELOW WAS DERIVED FROM TRIAGING A REAL BASELINE (2026-07-25): a portfolio sweep of
+# 19 repos produced 253 findings, all of which were verified false positives. They are grouped by
+# CAUSE rather than by path, so each one states a falsifiable reason it cannot be a live secret.
+# A path-shaped suppression that hides a future real leak is the failure this repo exists to
+# prevent — cf. the .gitleaksignore baseline that made the unrotated ATD_C1 credential look
+# contained.
+
+[[allowlists]]
+description = "Lockfiles and this config — integrity hashes and example regexes, not secrets"
+paths = [
+  '''(.*/)?package-lock\.json$''',
+  '''(.*/)?pnpm-lock\.yaml$''',
+  '''(.*/)?yarn\.lock$''',
+  '''(.*/)?go\.sum$''',
+  '''(.*/)?\.gitleaks\.toml$''',
+]
+
+# 20 of the 253 findings were in files git does not track. Scanning a working tree reads build
+# output; git never stored it, so it cannot be a *committed* secret. The generating source is
+# still scanned, so a real secret that reaches a build artifact is caught at its origin.
+[[allowlists]]
+description = "Generated build output — gitignored and untracked, so never committed"
+paths = [
+  '''(^|/)(bin|obj)/(Debug|Release)/''',
+  '''(^|/)\.next/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)\.playwright/''',
+  '''(^|/)packages/[a-z0-9.]+/[0-9]+\.[0-9]+''',   # restored NuGet package cache
+  '''(^|/)dist/''',
+  '''(^|/)\.astro/''',
+  '''(^|/)\.svelte-kit/''',
+  '''(^|/)\.output/''',
+]
+
+# 162 findings. Vendored upstream source (Grafana et al.) under a test-data path. These are the
+# UPSTREAM PROJECT'S OWN fixtures — deliberately-fake keys shipped to test redaction logic. Scoped
+# to test-data/testdata directories so first-party code vendored nearby is still scanned.
+#
+# Scoped to TEST files inside the vendored tree only. Vendored non-test source is still scanned,
+# so a credential added to third-party code we actually ship would still fire. Do NOT widen this
+# to the whole External/OpenSource tree.
+[[allowlists]]
+description = "Third-party vendored upstream test fixtures and test files"
+paths = [
+  '''(^|/)External/(OpenSource|Legacy)/.*/(test-data|testdata|testdata_request|__fixtures__|__mocks__|fixtures)/''',
+  '''(^|/)External/(OpenSource|Legacy)/.*_test\.go$''',
+  '''(^|/)External/(OpenSource|Legacy)/.*\.(test|spec)\.(ts|tsx|js|jsx)$''',
+  '''(^|/)External/(OpenSource|Legacy)/.*/(devenv|e2e|integration-tests)/''',
+  # Delphi IDE backup files (~1~ … ~99~) are editor churn, never reviewed source.
+  '''(^|/)External/Legacy/.*/__history/.*\.~\d+~$''',
+]
+
+# 22 findings. Delphi .dfm forms store embedded images as long uppercase-hex byte streams; a
+# 64-char run beginning EAAA matches the Square token rule by coincidence. Verified: the matches
+# are pure [0-9A-F] with zero lowercase, whereas a real Square token is mixed-case base64.
+# Targets the SECRET, not the path — so an actual token in one of these files still fires.
+[[allowlists]]
+description = "Uppercase-hex binary blobs (Delphi .dfm resources) misread as tokens"
+regexTarget = "secret"
+regexes = ['''^[0-9A-F]{32,}$''']
+
+# 9 findings. Stripe TEST keys are non-production by construction: they cannot move money and
+# Stripe publishes them in its own docs. Live keys (sk_live_/rk_live_) are NOT allowlisted.
+[[allowlists]]
+description = "Stripe test-mode keys (sk_test_/pk_test_ only — live keys still fire)"
+regexTarget = "secret"
+regexes = [
+  '''(sk|pk|rk)_test_[A-Za-z0-9]+''',
+]
+
+# 4 findings. A credential pointing at localhost is a CI service-container login that exists only
+# inside the job. The host is part of the match, so a real host with the same username still fires.
+#
+# Also covers container/orchestrator service names — a host with NO DOT is not internet-routable,
+# so it can only be a name resolved inside a compose network or cluster (e.g. `postiz-postgres`).
+# A credential pointing at one is unusable from outside that network. Hosts WITH a dot are never
+# allowlisted, which is what keeps the ATD_C1 class (an RDS endpoint) firing.
+[[allowlists]]
+description = "Loopback and container-internal database URIs (non-routable hosts only)"
+regexTarget = "match"
+regexes = [
+  '''(?i)(postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^\s:@/]+:[^\s:@/]+@(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?''',
+  '''(?i)(postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^\s:@/]+:[^\s:@/]+@[a-z0-9][a-z0-9_-]*(:\d+)?(/|$)''',
+]
+
+# ~15 findings. Documentation placeholders: an env-var NAME, or an obviously-templated value.
+# Targets the secret text, so a real token pasted into a doc still fires.
+[[allowlists]]
+description = "Documentation placeholders and env-var names, not values"
+regexTarget = "secret"
+regexes = [
+  '''^[A-Z][A-Z0-9_]{4,}$''',                       # ANTHROPIC_API_KEY_2 — a name, not a value
+  '''(?i)^(<[^>]+>|\{\{.*\}\}|\$\{.*\}|example|placeholder|changeme|xxx+|\.\.\.)$''',
+  '''(?i)^(YOUR_[A-Z0-9_]+|REPLACE_[A-Z0-9_]+|TODO)$''',
+  # Values that NAME themselves as fill-me-in: replace-me-with-64-hex-chars, ctx_your_token_here,
+  # sk_live_abc123. Anchored on the self-describing word, so a real key never matches.
+  '''(?i)(^|[_-])(replace[_-]?me|your[_-]?(token|key|secret|api|password)|fill[_-]?me|dummy|fake|notreal|redacted)''',
+]
+
+# .env.example / .env.sample / .env.template exist to be committed and hold placeholders by
+# definition. A real .env is gitignored and is NOT covered here.
+[[allowlists]]
+description = "Example env templates (never real .env files)"
+paths = [
+  '''(^|/)\.env\.(example|sample|template|dist)$''',
+  '''(^|/)\.env\.example\.[a-z]+$''',
+]
+# NOTE: deliberately NOT allowlisting test/fixture directories. The portfolio's real leaks landed
+# in test scripts (run_db_test.sh, *.connection.test.ts) — a *.test.* allowlist would have hidden
+# exactly the leak we most need to catch. Use a precise .gitleaksignore fingerprint for a genuine
+# test-only fake credential instead.

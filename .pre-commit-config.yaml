@@ -1,0 +1,16 @@
+# Pre-commit hook config — first line of defense (the CI gate is the backstop).
+#
+# Drop this in at a repo root and run `pre-commit install` (or use install-hooks.sh). The gitleaks
+# hook then scans STAGED changes on every commit and blocks the commit if it finds a secret.
+#
+# This is a hook, not a wall: it can be skipped (`git commit --no-verify`), it doesn't run on a
+# fresh clone until `pre-commit install` is re-run, and force-pushes bypass it. That is exactly why
+# the non-bypassable CI gate (dessa-org/.github → secret-scan.yml) exists behind it. Run both.
+#
+# Requires: https://pre-commit.com  (pip install pre-commit / brew install pre-commit)
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        # Uses the repo's .gitleaks.toml automatically if present.
