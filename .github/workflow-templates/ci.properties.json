@@ -1,0 +1,7 @@
+{
+  "name": "Dessa CI",
+  "description": "Portfolio-standard CI (ADR 0004). Auto-detects Node/.NET/Go and runs build, lint, test via the dessa-org/.github reusable workflow.",
+  "iconName": "octicon-check-circle",
+  "categories": ["Continuous integration"],
+  "filePatterns": []
+}
