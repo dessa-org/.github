@@ -1,0 +1,328 @@
+# Reusable code + dependency scanning, one place for every dessa-org repo.
+#
+# Three questions, three pinned, checksum-verified scanners:
+#   deps      osv-scanner  "does a dependency have a known vulnerability, or is it a KNOWN-MALICIOUS
+#                           package?" (OSV MAL-* advisories; CVE-shaped feeds don't carry these)
+#   code      opengrep     "does first-party code contain a known bug pattern?" (LGPL Semgrep fork;
+#                           not CodeQL, which isn't free on private repos)
+#   config    trivy        "is a Dockerfile / compose / Terraform / K8s / CI file misconfigured?"
+#                           (misconfig only; osv covers package vulnerabilities)
+#
+# Callers add workflow-templates/code-scan.yml as .github/workflows/code-scan.yml. It runs on every
+# PR, on pushes to the trunks, and NIGHTLY. The nightly run is the point: an advisory published
+# after your last merge (e.g. GHSA-2xp9, 2026-09-08, a critical RCE in Next.js) only surfaces if
+# something re-scans code that hasn't changed.
+#
+# Gate policy (v1, report-only first, per ADR 0006):
+#   - A tool that fails to run is RED. "Couldn't scan" is never "clean".
+#   - A KNOWN-MALICIOUS package (OSV MAL-*) is RED regardless of fail-on.
+#   - Dependency severities fail the job only at/above `fail-on` (default: none = report-only).
+#   - Code and config findings are reported, never blocking, until each repo is baselined.
+#
+# Alerting: on schedule / workflow_dispatch runs, findings at or above HIGH, any MAL-*, or a tool
+# error open or update ONE issue labelled `security-scan` in the calling repo (GitHub emails its
+# watchers). When a nightly run comes back clean, the issue is commented on and closed. Requires the
+# caller to grant `issues: write`; without it the scan still runs and warns.
+#
+# Same conventions as secret-scan.yml: install the pinned binary (no marketplace action, no
+# license), verify it before executing, and emit JSON artifacts + a job summary instead of SARIF
+# (code scanning is GHAS-gated on private repos).
+#
+# Owner: dessa-security. Pins mirror dessa-security/tooling/versions.env; bump both together.
+name: Code Scan
+
+on:
+  workflow_call:
+    inputs:
+      fail-on:
+        description: >-
+          Dependency severity that fails the job: 'none' (report-only, default), 'critical', or
+          'high' (high and critical). MAL-* packages and tool errors always fail.
+        type: string
+        default: 'none'
+      opengrep-config:
+        description: >-
+          Opengrep rules when the repo has no .opengrep/ directory. 'auto' fetches rules from the
+          Semgrep registry at scan time: it needs network and tells a third party you are
+          scanning. Vendor rules into .opengrep/ to avoid both.
+        type: string
+        default: 'auto'
+      osv-scanner-version:
+        type: string
+        default: '2.4.0'
+      trivy-version:
+        type: string
+        default: '0.72.0'
+      opengrep-version:
+        type: string
+        default: '1.26.0'
+      opengrep-sha256:
+        description: Opengrep publishes no checksums file; this pin is trust-on-first-use (see versions.env).
+        type: string
+        default: '40c21299eeddabf743b856daa843d24f9d4a027130671cd45b3b21776fd9ab26'
+      issue-label:
+        type: string
+        default: 'security-scan'
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: code-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install scanners (pinned + checksum-verified)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/scanners && cd /tmp/scanners
+
+          # osv-scanner: verify against the release's SHA256SUMS file
+          ov="${{ inputs.osv-scanner-version }}"
+          ob="https://github.com/google/osv-scanner/releases/download/v${ov}"
+          curl -sSfL "${ob}/osv-scanner_linux_amd64" -o osv-scanner_linux_amd64
+          curl -sSfL "${ob}/osv-scanner_SHA256SUMS" -o osv.sums
+          grep ' osv-scanner_linux_amd64$' osv.sums | sha256sum -c -
+          sudo install osv-scanner_linux_amd64 /usr/local/bin/osv-scanner
+
+          # trivy: verify against the release's checksums file
+          tv="${{ inputs.trivy-version }}"
+          ta="trivy_${tv}_Linux-64bit.tar.gz"
+          tb="https://github.com/aquasecurity/trivy/releases/download/v${tv}"
+          curl -sSfL "${tb}/${ta}" -o "${ta}"
+          curl -sSfL "${tb}/trivy_${tv}_checksums.txt" -o trivy.sums
+          grep " ${ta}\$" trivy.sums | sha256sum -c -
+          tar -xzf "${ta}" trivy
+          sudo install trivy /usr/local/bin/trivy
+
+          # opengrep: no checksums file upstream, so verify against the pinned hash
+          gv="${{ inputs.opengrep-version }}"
+          curl -sSfL "https://github.com/opengrep/opengrep/releases/download/v${gv}/opengrep_manylinux_x86" -o opengrep
+          echo "${{ inputs.opengrep-sha256 }}  opengrep" | sha256sum -c -
+          sudo install opengrep /usr/local/bin/opengrep
+
+          osv-scanner --version | head -1
+          trivy --version | head -1
+          opengrep --version | head -1
+
+      - name: Scan dependencies (osv-scanner)
+        id: deps
+        shell: bash
+        run: |
+          set -uo pipefail
+          osv-scanner scan source --recursive --format json --output osv.json . 2> osv.log
+          rc=$?
+          # 0 = no vulns, 1 = vulns found, 128 = no lockfiles/packages found; anything else = tool error
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "osv-scanner exit $rc"; tail -5 osv.log || true
+
+      - name: Scan code (opengrep)
+        id: sast
+        shell: bash
+        run: |
+          set -uo pipefail
+          cfg="${{ inputs.opengrep-config }}"
+          [ -d .opengrep ] && cfg=".opengrep"
+          echo "rules: $cfg"
+          opengrep scan --config "$cfg" --json --output sast.json --quiet --error=false . 2> sast.log
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "opengrep exit $rc"; tail -5 sast.log || true
+
+      - name: Scan config (trivy misconfig)
+        id: iac
+        shell: bash
+        run: |
+          set -uo pipefail
+          trivy fs --scanners misconfig --format json --output trivy.json --quiet --no-progress . 2> trivy.log
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "trivy exit $rc"; tail -5 trivy.log || true
+
+      - name: Summarize
+        id: sum
+        shell: bash
+        env:
+          DEPS_RC: ${{ steps.deps.outputs.rc }}
+          SAST_RC: ${{ steps.sast.outputs.rc }}
+          IAC_RC: ${{ steps.iac.outputs.rc }}
+          FAIL_ON: ${{ inputs.fail-on }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+
+          def load(path):
+              try:
+                  with open(path) as f:
+                      return json.load(f)
+              except Exception:
+                  return None
+
+          def bucket(score):
+              try:
+                  s = float(score)
+              except (TypeError, ValueError):
+                  return None
+              return "critical" if s >= 9 else "high" if s >= 7 else "medium" if s >= 4 else "low"
+
+          GH_SEV = {"CRITICAL": "critical", "HIGH": "high", "MODERATE": "medium", "MEDIUM": "medium", "LOW": "low"}
+          errors, lines = [], []
+
+          # --- deps ---------------------------------------------------------------------------
+          deps_rc = int(os.environ.get("DEPS_RC") or 127)
+          osv = load("osv.json")
+          dep_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0}
+          mal, top = [], []
+          if deps_rc not in (0, 1, 128) or (deps_rc in (0, 1) and osv is None):
+              errors.append(f"osv-scanner failed (exit {deps_rc})")
+          for res in (osv or {}).get("results", []) or []:
+              for pkg in res.get("packages", []) or []:
+                  p = pkg.get("package", {})
+                  name = f"{p.get('ecosystem','?')}:{p.get('name','?')}@{p.get('version','?')}"
+                  vulns = {v.get("id"): v for v in pkg.get("vulnerabilities", []) or []}
+                  for vid in vulns:
+                      if vid and vid.startswith("MAL-"):
+                          mal.append(f"{name} {vid}")
+                  for g in pkg.get("groups", []) or [{"ids": [i]} for i in vulns]:
+                      sev = bucket(g.get("max_severity"))
+                      if sev is None:
+                          for vid in g.get("ids", []):
+                              s = GH_SEV.get(str((vulns.get(vid) or {}).get("database_specific", {}).get("severity", "")).upper())
+                              if s:
+                                  sev = s
+                                  break
+                      sev = sev or "unknown"
+                      dep_counts[sev] += 1
+                      if sev in ("critical", "high"):
+                          top.append((0 if sev == "critical" else 1, f"**{sev}** `{name}`: {', '.join(g.get('ids', [])[:3])}"))
+
+          # --- code ---------------------------------------------------------------------------
+          sast_rc = int(os.environ.get("SAST_RC") or 127)
+          sast = load("sast.json")
+          sast_counts = {"high": 0, "medium": 0, "low": 0}
+          if sast_rc != 0 or sast is None:
+              errors.append(f"opengrep failed (exit {sast_rc})")
+          for r in (sast or {}).get("results", []) or []:
+              s = {"ERROR": "high", "WARNING": "medium"}.get(str(r.get("extra", {}).get("severity", "")).upper(), "low")
+              sast_counts[s] += 1
+
+          # --- config -------------------------------------------------------------------------
+          iac_rc = int(os.environ.get("IAC_RC") or 127)
+          trivy = load("trivy.json")
+          iac_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+          if iac_rc != 0 or trivy is None:
+              errors.append(f"trivy failed (exit {iac_rc})")
+          for res in (trivy or {}).get("Results", []) or []:
+              for m in res.get("Misconfigurations", []) or []:
+                  k = str(m.get("Severity", "")).lower()
+                  if k in iac_counts:
+                      iac_counts[k] += 1
+
+          # --- verdict ------------------------------------------------------------------------
+          fail_on = os.environ.get("FAIL_ON", "none")
+          crit, high = dep_counts["critical"], dep_counts["high"]
+          blocking = bool(errors) or bool(mal) or (fail_on == "critical" and crit > 0) or (fail_on == "high" and crit + high > 0)
+          alert = bool(errors) or bool(mal) or crit + high > 0 or iac_counts["critical"] + iac_counts["high"] > 0
+
+          lines.append(f"## Code scan: {'🚨 ACTION NEEDED' if alert else '✅ nothing at or above high'}")
+          lines.append("")
+          if errors:
+              lines.append("**Tool errors (a failed scan is not a clean scan):** " + "; ".join(errors))
+              lines.append("")
+          if mal:
+              lines.append(f"### 🚨 {len(mal)} KNOWN-MALICIOUS package(s)")
+              lines.append("Remove them, then treat every machine and CI runner that installed them as compromised.")
+              lines += [f"- `{m}`" for m in mal[:20]]
+              lines.append("")
+          lines.append("| Layer | Critical | High | Medium | Low | Other |")
+          lines.append("|---|---|---|---|---|---|")
+          lines.append(f"| Dependencies (osv) | {crit} | {high} | {dep_counts['medium']} | {dep_counts['low']} | {dep_counts['unknown']} unscored |")
+          lines.append(f"| Code (opengrep) | n/a | {sast_counts['high']} | {sast_counts['medium']} | {sast_counts['low']} | |")
+          lines.append(f"| Config (trivy) | {iac_counts['critical']} | {iac_counts['high']} | {iac_counts['medium']} | {iac_counts['low']} | |")
+          lines.append("")
+          if top:
+              lines.append("### Critical / high dependency advisories")
+              lines += [t for _, t in sorted(top)[:25]]
+              if len(top) > 25:
+                  lines.append(f"...and {len(top) - 25} more in the `code-scan-reports` artifact.")
+              lines.append("")
+          lines.append(f"Gate: fail-on=`{fail_on}` → **{'FAIL' if blocking else 'pass'}**. Full JSON: `code-scan-reports` artifact on [this run]({os.environ['RUN_URL']}).")
+
+          body = "\n".join(lines)
+          open("summary.md", "w").write(body + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(body + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"blocking={'true' if blocking else 'false'}\n")
+              f.write(f"alert={'true' if alert else 'false'}\n")
+          print(body)
+          PY
+
+      - name: Upload reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-scan-reports
+          path: |
+            osv.json
+            sast.json
+            trivy.json
+            summary.md
+          if-no-files-found: ignore
+
+      - name: Open, update or close the security-scan issue (nightly / manual runs)
+        if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.sum.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ALERT: ${{ steps.sum.outputs.alert }}
+          LABEL: ${{ inputs.issue-label }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create "$LABEL" --color B60205 --description "Nightly code-scan findings (dessa-security)" --force >/dev/null
+          existing=$(gh issue list --label "$LABEL" --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ "$ALERT" = "true" ]; then
+            { echo "Nightly code scan found issues at or above **high**, a known-malicious package, or a scanner error."; echo; cat summary.md; } > issue.md
+            if [ -n "$existing" ]; then
+              gh issue edit "$existing" --body-file issue.md >/dev/null
+              gh issue comment "$existing" --body "Still failing as of [run]($RUN_URL)." >/dev/null
+              echo "updated issue #$existing"
+            else
+              gh issue create --title "Security scan: findings need attention" --label "$LABEL" --body-file issue.md
+            fi
+          elif [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Clean as of [run]($RUN_URL): nothing at or above high, no malicious packages, all scanners ran. Closing." >/dev/null
+            gh issue close "$existing" >/dev/null
+            echo "closed issue #$existing"
+          else
+            echo "clean, no open issue"
+          fi
+
+      - name: Gate
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ "${{ steps.sum.outcome }}" != "success" ]; then
+            echo "::error::code-scan could not summarize results. Treat as RED until fixed."; exit 1
+          fi
+          if [ "${{ steps.sum.outputs.blocking }}" = "true" ]; then
+            echo "::error::code-scan gate failed (tool error, a MAL-* package, or dependency severity at/above fail-on). See the job summary."; exit 1
+          fi
+          if [ "${{ steps.sum.outputs.alert }}" = "true" ]; then
+            echo "::warning::code-scan found high/critical issues (report-only). See the job summary."
+          fi
+          echo "code-scan gate: pass"

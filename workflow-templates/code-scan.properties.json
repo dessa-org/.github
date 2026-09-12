@@ -1,0 +1,7 @@
+{
+  "name": "Dessa Code Scan",
+  "description": "Nightly + per-PR dependency (osv-scanner, incl. known-malicious packages), code (opengrep) and config (trivy) scanning via the dessa-org/.github reusable workflow. Report-only first; nightly findings open a security-scan issue.",
+  "iconName": "octicon-shield-check",
+  "categories": ["Security", "Continuous integration"],
+  "filePatterns": []
+}
