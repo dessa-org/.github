@@ -1,0 +1,34 @@
+# Standard Dessa portfolio code + dependency scan. Drop this in as .github/workflows/code-scan.yml.
+# Nothing to configure. It scans:
+#   - every pull request (no branch filter: stacked PRs must be scanned too),
+#   - pushes to the trunks,
+#   - NIGHTLY, so advisories published after your last merge still surface,
+#   - on demand (Actions → Code Scan → Run workflow).
+#
+# Report-only first (fail-on: none). Known-malicious packages and scanner errors fail regardless.
+# Nightly findings open ONE `security-scan` issue in this repo (watchers are emailed) and close it
+# when the repo is clean. Once a repo is green, raise fail-on to 'critical' and make
+# "code-scan / code-scan" a required check. See dessa-security ROADMAP Phase 1c (APP-2).
+name: Code Scan
+
+on:
+  pull_request:
+  push:
+    branches: [develop, staging, main, master]
+  schedule:
+    - cron: '23 7 * * *'   # nightly, 07:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write   # lets the nightly run open/close the security-scan issue
+
+concurrency:
+  group: code-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  code-scan:
+    uses: dessa-org/.github/.github/workflows/code-scan.yml@main
+    with:
+      fail-on: 'none'   # later: 'critical', then 'high'
