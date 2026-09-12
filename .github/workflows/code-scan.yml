@@ -120,7 +120,7 @@ jobs:
         run: |
           set -uo pipefail
           set +e   # GitHub's bash is -e by default; a non-zero scanner exit is data, not a crash
-          osv-scanner scan source --recursive --format json --output osv.json . 2> osv.log
+          osv-scanner scan source --recursive --format json --output-file osv.json . 2> osv.log
           rc=$?
           # 0 = no vulns, 1 = vulns found, 128 = no lockfiles/packages found; anything else = tool error
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
@@ -135,7 +135,7 @@ jobs:
           cfg="${{ inputs.opengrep-config }}"
           [ -d .opengrep ] && cfg=".opengrep"
           echo "rules: $cfg"
-          opengrep scan --config "$cfg" --json --output sast.json --quiet --error=false . 2> sast.log
+          opengrep scan --config "$cfg" --json --output sast.json --quiet . 2> sast.log   # no --error: findings exit 0, real errors non-zero
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           echo "opengrep exit $rc"; tail -5 sast.log || true
@@ -187,7 +187,7 @@ jobs:
           deps_rc = int(os.environ.get("DEPS_RC") or 127)
           osv = load("osv.json")
           dep_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0}
-          mal, top = [], []
+          mal, top, seen = [], [], set()   # dedupe: the same advisory in several lockfiles counts once
           if deps_rc not in (0, 1, 128) or (deps_rc in (0, 1) and osv is None):
               errors.append(f"osv-scanner failed (exit {deps_rc})")
           for res in (osv or {}).get("results", []) or []:
@@ -199,6 +199,10 @@ jobs:
                       if vid and vid.startswith("MAL-"):
                           mal.append(f"{name} {vid}")
                   for g in pkg.get("groups", []) or [{"ids": [i]} for i in vulns]:
+                      key = (name, tuple(sorted(g.get("ids", []))))
+                      if key in seen:
+                          continue
+                      seen.add(key)
                       sev = bucket(g.get("max_severity"))
                       if sev is None:
                           for vid in g.get("ids", []):
@@ -244,6 +248,7 @@ jobs:
           if errors:
               lines.append("**Tool errors (a failed scan is not a clean scan):** " + "; ".join(errors))
               lines.append("")
+          mal = sorted(set(mal))
           if mal:
               lines.append(f"### 🚨 {len(mal)} KNOWN-MALICIOUS package(s)")
               lines.append("Remove them, then treat every machine and CI runner that installed them as compromised.")
