@@ -119,6 +119,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          set +e   # GitHub's bash is -e by default; a non-zero scanner exit is data, not a crash
           osv-scanner scan source --recursive --format json --output osv.json . 2> osv.log
           rc=$?
           # 0 = no vulns, 1 = vulns found, 128 = no lockfiles/packages found; anything else = tool error
@@ -130,6 +131,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          set +e   # GitHub's bash is -e by default; a non-zero scanner exit is data, not a crash
           cfg="${{ inputs.opengrep-config }}"
           [ -d .opengrep ] && cfg=".opengrep"
           echo "rules: $cfg"
@@ -143,6 +145,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          set +e   # GitHub's bash is -e by default; a non-zero scanner exit is data, not a crash
           trivy fs --scanners misconfig --format json --output trivy.json --quiet --no-progress . 2> trivy.log
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
@@ -150,6 +153,7 @@ jobs:
 
       - name: Summarize
         id: sum
+        if: ${{ always() }}
         shell: bash
         env:
           DEPS_RC: ${{ steps.deps.outputs.rc }}
