@@ -6,7 +6,9 @@
 #   - on demand (Actions → Code Scan → Run workflow).
 #
 # Report-only first (fail-on: none). Known-malicious packages fail regardless; scanner errors are
-# flagged loudly (annotation, summary, nightly issue) and fail once fail-on is raised.
+# flagged loudly (annotation, summary, nightly issue) and fail once fail-on is raised. So does a PR
+# that changes scanner config (osv-scanner.toml, .opengrep/, trivy.yaml, .trivyignore): land those
+# in their own reviewed PR.
 # Nightly findings open ONE `security-scan` issue in this repo (watchers are emailed) and close it
 # when the repo is clean. Once a repo is green, raise fail-on to 'critical' and make
 # "code-scan / code-scan" a required check. See dessa-security ROADMAP Phase 1c (APP-2).
