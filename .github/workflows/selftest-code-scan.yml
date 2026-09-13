@@ -1,0 +1,21 @@
+# Self-test: run the reusable code-scan workflow on every PR that changes it, as a caller that grants
+# ONLY `contents: read`. That's the least a caller can grant, and the workflow must still start and scan.
+# (A reusable workflow that asks for more than its caller grants is refused by GitHub before any step
+# runs.) Scanning this repo itself is harmless: it's public.
+name: Self-test Code Scan
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/code-scan.yml'
+      - '.github/workflows/selftest-code-scan.yml'
+      - 'workflow-templates/code-scan.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  code-scan:
+    uses: ./.github/workflows/code-scan.yml
+    with:
+      fail-on: 'none'
