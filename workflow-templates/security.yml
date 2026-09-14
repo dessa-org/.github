@@ -8,8 +8,13 @@
 name: Security
 
 on:
+  # Every pull request, whatever branch it targets.
+  #
+  # This used to read `branches: [...]`, which matches the pull request's BASE.
+  # It looked like "scan PRs into our trunks" and meant "exempt every stacked
+  # PR" — a PR based on another feature branch was never scanned, and those are
+  # exactly the branches that get force-pushed and rebased most.
   pull_request:
-    branches: [develop, staging, main]
   push:
     branches: [develop, staging, main]
 
