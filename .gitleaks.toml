@@ -21,7 +21,9 @@ useDefault = true
 [[rules]]
 id = "dessa-db-connection-uri"
 description = "Database connection URI with inline credentials (postgres/mysql/mongodb)"
-regex = '''(?i)\b(postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^\s:@/]+:[^\s:@/]+@[^\s/]+'''
+# secretGroup = the password. Without it gitleaks treats the scheme as the secret, and --redact leaves user:password in the report.
+regex = '''(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^\s:@/]+:([^\s:@/]+)@[^\s/]+'''
+secretGroup = 1
 keywords = ["postgres", "postgresql", "mysql", "mongodb"]
 
 # --- Allowlists -----------------------------------------------------------------------------
